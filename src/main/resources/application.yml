@@ -6,7 +6,7 @@ spring:
     name: xiaolou-bi-backend
   # 默认 dev 环境
   profiles:
-    active: dev
+    active: local
   # 支持 swagger3
   mvc:
     pathmatch:
@@ -80,3 +80,5 @@ knife4j:
         api-rule: package
         api-rule-resources:
           - com.xiaolou.bi.controller
+#ai:
+#  apikey: your-apiKey
