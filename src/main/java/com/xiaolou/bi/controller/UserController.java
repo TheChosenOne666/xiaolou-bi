@@ -287,4 +287,29 @@ public class UserController {
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
         return ResultUtils.success(true);
     }
+
+    /**
+     * 获取个人中心信息
+     *
+     * @param request
+     * @return
+     */
+    @GetMapping("/center")
+    public BaseResponse<LoginUserVO> getUserCenter(HttpServletRequest request) {
+        User user = userService.getLoginUser(request);
+        return ResultUtils.success(userService.getLoginUserVO(user));
+    }
+
+    /**
+     * 获取个人设置信息
+     *
+     * @param request
+     * @return
+     */
+    @GetMapping("/settings")
+    public BaseResponse<LoginUserVO> getUserSettings(HttpServletRequest request) {
+        User user = userService.getLoginUser(request);
+        return ResultUtils.success(userService.getLoginUserVO(user));
+    }
+
 }

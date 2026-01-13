@@ -7,12 +7,16 @@ import com.xiaolou.bi.common.ErrorCode;
 import com.xiaolou.bi.exception.BusinessException;
 import io.reactivex.rxjava3.core.Flowable;
 import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.ArrayList;
 import java.util.List;
 
-@Component
+/**
+ * AI 管理器
+ */
+@Service
 public class AiManager {
     @Resource
     private ZhipuAiClient zhipuAiClient;

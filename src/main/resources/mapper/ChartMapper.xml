@@ -23,4 +23,5 @@
         ,goal,`name`,chartData,chartType,genChart,genResult,
         userId,createTime,updateTime,isDelete
     </sql>
+
 </mapper>

@@ -1,5 +1,6 @@
 package com.xiaolou.bi.controller;
 
+import cn.hutool.core.io.FileUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.google.gson.Gson;
 import com.xiaolou.bi.annotation.AuthCheck;
@@ -11,6 +12,7 @@ import com.xiaolou.bi.constant.UserConstant;
 import com.xiaolou.bi.exception.BusinessException;
 import com.xiaolou.bi.exception.ThrowUtils;
 import com.xiaolou.bi.manager.AiManager;
+import com.xiaolou.bi.manager.RedissonManager;
 import com.xiaolou.bi.model.dto.chart.*;
 import com.xiaolou.bi.model.entity.Chart;
 import com.xiaolou.bi.model.entity.User;
@@ -26,6 +28,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
+
+import java.util.Arrays;
+import java.util.List;
 
 import static com.xiaolou.bi.service.impl.ChartServiceImpl.GENERATE_CHART_SYSTEM_PROMPT;
 
@@ -48,6 +53,9 @@ public class ChartController {
 
     @Resource
     private AiManager aiManager;
+
+    @Resource
+    private RedissonManager redissonManager;
 
     private static final Gson GSON = new Gson();
     private final Float DEFAULT_TEMPERATURE = 0.6f;
@@ -236,8 +244,22 @@ public class ChartController {
         // 校验
         ThrowUtils.throwIf(StringUtils.isAnyBlank(goal, name, chartType), ErrorCode.PARAMS_ERROR, "目标为空");
         ThrowUtils.throwIf(name.length() > 100, ErrorCode.PARAMS_ERROR, "名称过长");
+        // 校验文件
+        long size = multipartFile.getSize();
+        String originalFilename = multipartFile.getOriginalFilename();
+        //1.校验文件大小
+        final long MAX_SIZE = 1024 * 1024;  //先用1MB便于测试
+        ThrowUtils.throwIf(size > MAX_SIZE, ErrorCode.PARAMS_ERROR, "文件过大，不能超过1MB");
+        //2.校验文件后缀名
+        String suffix = FileUtil.extName(originalFilename);
+        final List<String> validFileSuffixList = Arrays.asList("xlsx", "xls", "csv", "txt", "png", "jpg", "jpeg", "webp");
+        ThrowUtils.throwIf(!validFileSuffixList.contains(suffix), ErrorCode.PARAMS_ERROR, "文件格式错误，后缀非法");
+
         String data = ExcelUtils.excelToCsv(multipartFile);
         User loginUser = userService.getLoginUser(request);
+        String id = String.valueOf(loginUser.getId());
+        redissonManager.doRateLimit("genChartByAi_" + id);
+
         String userMessage = chartService.getGenerateChartUserMessage(genChartByAiRequest, multipartFile);
 
         String result = aiManager.doRequest(GENERATE_CHART_SYSTEM_PROMPT, userMessage, false, DEFAULT_TEMPERATURE);
