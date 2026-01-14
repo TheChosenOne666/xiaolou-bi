@@ -42,6 +42,7 @@ spring:
     multipart:
       # 大小限制
       max-file-size: 10MB
+
 server:
   address: 0.0.0.0
   port: 8108
@@ -81,3 +82,5 @@ knife4j:
           - com.xiaolou.bi.controller
 #ai:
 #  apikey: your-apiKey
+
+

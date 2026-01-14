@@ -16,6 +16,7 @@ import com.xiaolou.bi.manager.RedissonManager;
 import com.xiaolou.bi.model.dto.chart.*;
 import com.xiaolou.bi.model.entity.Chart;
 import com.xiaolou.bi.model.entity.User;
+import com.xiaolou.bi.model.enums.StatusEnum;
 import com.xiaolou.bi.model.vo.BiResponse;
 import com.xiaolou.bi.service.ChartService;
 import com.xiaolou.bi.service.UserService;
@@ -31,6 +32,8 @@ import javax.servlet.http.HttpServletRequest;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadPoolExecutor;
 
 import static com.xiaolou.bi.service.impl.ChartServiceImpl.GENERATE_CHART_SYSTEM_PROMPT;
 
@@ -56,6 +59,9 @@ public class ChartController {
 
     @Resource
     private RedissonManager redissonManager;
+
+    @Resource
+    private ThreadPoolExecutor threadPoolExecutor;
 
     private static final Gson GSON = new Gson();
     private final Float DEFAULT_TEMPERATURE = 0.6f;
@@ -248,11 +254,11 @@ public class ChartController {
         long size = multipartFile.getSize();
         String originalFilename = multipartFile.getOriginalFilename();
         //1.校验文件大小
-        final long MAX_SIZE = 1024 * 1024;  //先用1MB便于测试
-        ThrowUtils.throwIf(size > MAX_SIZE, ErrorCode.PARAMS_ERROR, "文件过大，不能超过1MB");
+        final long MAX_SIZE = 100 * 1024 * 1024;  //100MB
+        ThrowUtils.throwIf(size > MAX_SIZE, ErrorCode.PARAMS_ERROR, "文件过大，不能超过100MB");
         //2.校验文件后缀名
         String suffix = FileUtil.extName(originalFilename);
-        final List<String> validFileSuffixList = Arrays.asList("xlsx", "xls", "csv", "txt", "png", "jpg", "jpeg", "webp");
+        final List<String> validFileSuffixList = Arrays.asList("xlsx", "xls");
         ThrowUtils.throwIf(!validFileSuffixList.contains(suffix), ErrorCode.PARAMS_ERROR, "文件格式错误，后缀非法");
 
         String data = ExcelUtils.excelToCsv(multipartFile);
@@ -285,6 +291,96 @@ public class ChartController {
         biResponse.setChartId(chart.getId());
 
         return ResultUtils.success(biResponse);
+    }
+
+    /**
+     * AI 智能分析（异步化）
+     *
+     * @param multipartFile
+     * @param genChartByAiRequest
+     * @param request
+     * @return
+     */
+    @PostMapping("/gen/async")
+    public BaseResponse<BiResponse> genChartByAiAsync(@RequestPart("file") MultipartFile multipartFile,
+                                                 GenChartByAiRequest genChartByAiRequest, HttpServletRequest request) {
+        String goal = genChartByAiRequest.getGoal();
+        String name = genChartByAiRequest.getName();
+        String chartType = genChartByAiRequest.getChartType();
+        // 校验
+        ThrowUtils.throwIf(StringUtils.isAnyBlank(goal, name, chartType), ErrorCode.PARAMS_ERROR, "目标为空");
+        ThrowUtils.throwIf(name.length() > 100, ErrorCode.PARAMS_ERROR, "名称过长");
+        // 校验文件
+        long size = multipartFile.getSize();
+        String originalFilename = multipartFile.getOriginalFilename();
+        //1.校验文件大小
+        final long MAX_SIZE = 100 * 1024 * 1024;  //100MB
+        ThrowUtils.throwIf(size > MAX_SIZE, ErrorCode.PARAMS_ERROR, "文件过大，不能超过100MB");
+        //2.校验文件后缀名
+        String suffix = FileUtil.extName(originalFilename);
+        final List<String> validFileSuffixList = Arrays.asList("xlsx", "xls");
+        ThrowUtils.throwIf(!validFileSuffixList.contains(suffix), ErrorCode.PARAMS_ERROR, "文件格式错误，后缀非法");
+
+        String data = ExcelUtils.excelToCsv(multipartFile);
+        User loginUser = userService.getLoginUser(request);
+        String id = String.valueOf(loginUser.getId());
+        redissonManager.doRateLimit("genChartByAi_" + id);
+
+        String userMessage = chartService.getGenerateChartUserMessage(genChartByAiRequest, multipartFile);
+
+        // AI生成图表之前
+        Chart chart = new Chart();
+        chart.setGoal(goal);
+        chart.setName(name);
+        chart.setChartData(data);
+        chart.setChartType(chartType);
+        chart.setUserId(loginUser.getId());
+        //设置状态为等待中
+        chart.setStatus(StatusEnum.WAIT.getValue());
+        boolean waitResult = chartService.save(chart);
+        ThrowUtils.throwIf(!waitResult, ErrorCode.OPERATION_ERROR, "图表保存失败");
+        // 异步改造
+        CompletableFuture.runAsync(()->{
+            Chart updateChart = new Chart();
+            updateChart.setId(chart.getId());
+            updateChart.setStatus(StatusEnum.RUNNING.getValue());
+            boolean b = chartService.updateById(updateChart);
+            if (!b){
+                handleChartUpdateError(chart.getId(), "更新图表执行中状态失败");
+            }
+            String result = aiManager.doRequest(GENERATE_CHART_SYSTEM_PROMPT, userMessage, false, DEFAULT_TEMPERATURE);
+            String[] splits = result.split("【【【【【");
+            if (splits.length < 3) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 生成错误");
+            }
+            String genChart = splits[1].trim();
+            String genResult = splits[2].trim();
+            Chart updateChartResult = new Chart();
+            updateChartResult.setId(chart.getId());
+            updateChartResult.setGenChart(genChart);
+            updateChartResult.setGenResult(genResult);
+            updateChartResult.setStatus(StatusEnum.SUCCEED.getValue());
+            boolean updateResult = chartService.updateById(updateChartResult);
+            if (!updateResult) {
+                handleChartUpdateError(chart.getId(), "更新图表最终成功状态失败");
+            }
+        }, threadPoolExecutor);
+
+        BiResponse biResponse = new BiResponse();
+        biResponse.setChartId(chart.getId());
+        return ResultUtils.success(biResponse);
+    }
+
+    // 封装错误处理工具
+    private void handleChartUpdateError(long chartId, String execMessage) {
+        Chart updateChartResult = new Chart();
+        updateChartResult.setId(chartId);
+        updateChartResult.setStatus(StatusEnum.FAILED.getValue());
+        updateChartResult.setExecMessage(execMessage);
+        boolean updateResult = chartService.updateById(updateChartResult);
+        if (!updateResult) {
+            log.error("更新图表状态失败，chartId:{}", chartId + "," + execMessage);
+        }
     }
 }
 
